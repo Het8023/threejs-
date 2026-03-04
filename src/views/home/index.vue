@@ -7,8 +7,12 @@
             <el-button type="primary" @click="modelExplode">展开</el-button>
             <!-- 收起模型按钮：点击触发modelRestore函数 -->
             <el-button type="primary" @click="modelRestore">收起</el-button>
-            <!-- 添加色块按钮：点击触发addIcon函数 -->
-            <el-button type="primary" @click="addIcon">添加图标</el-button>
+            <!-- 编辑按钮：仅非编辑状态显示 -->
+            <el-button type="warning" @click="enterEditMode" v-if="!isEditMode">编辑</el-button>
+            <!-- 添加色块按钮：仅编辑状态显示 -->
+            <el-button type="success" @click="addIcon" v-if="isEditMode">添加图标</el-button>
+            <!-- 取消编辑按钮：仅编辑状态显示 -->
+            <el-button type="danger" @click="exitEditMode" v-if="isEditMode">取消编辑</el-button>
         </div>
         <!-- 3D场景主容器：Three.js渲染的画布会挂载到这里 -->
         <div id="MAIN" class="main"></div>
@@ -16,6 +20,10 @@
         <div id="nameTag" class="model-name-tag" style="display: none"></div>
         <!-- 自定义右键菜单：右键点击色块时显示 -->
         <div id="contextMenu" class="context-menu" style="display: none">
+            <!-- 复制色块菜单项 -->
+            <div class="menu-item" @click="copySelectedCircle">复制该色块</div>
+            <!-- 粘贴色块菜单项 -->
+            <div class="menu-item" @click="pasteCircle">粘贴色块</div>
             <!-- 删除色块菜单项：点击触发deleteSelectedCircle函数 -->
             <div class="menu-item" @click="deleteSelectedCircle">删除该色块</div>
         </div>
@@ -43,6 +51,9 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass";
 import { OutlinePass } from "three/examples/jsm/postprocessing/OutlinePass";
 // 导入gsap：实现平滑的动画效果（模型展开/收起）
 import gsap from "gsap";
+
+// ==================== 核心新增：编辑状态响应式变量 ====================
+const isEditMode = ref(false); // 标记是否处于编辑模式
 
 // ==================== 全局变量定义 ====================
 // 射线检测器：用于检测鼠标点击/划过的3D物体
@@ -84,6 +95,11 @@ let gui;
 let colorGuiFolder = null;
 // 色块名称控制器：用于修改色块名称的GUI控件
 let colorNameController = null;
+
+// 新增：存储复制的色块数据（深拷贝）
+let copiedCircleData = null;
+// 新增：存储右键点击位置（全局）
+window.rightClickPosition = null;
 
 // ==================== 1. 初始化3D场景 ====================
 const init = () => {
@@ -250,6 +266,32 @@ const createGui = () => {
 
     // 创建dat.GUI实例
     gui = new dat.GUI();
+    // 初始隐藏GUI（非编辑模式）
+    if (gui.domElement) gui.domElement.style.display = isEditMode.value ? "block" : "none";
+
+    // ==================== 修复：场景背景颜色修改（处理null值） ====================
+    const sceneFolder = gui.addFolder("场景设置");
+    // 1. 修复核心：先判断背景色是否存在，不存在则设置默认值（浅灰色）
+    let currentBgColor = "#000000"; // 默认背景色
+    if (scene.background && scene.background.isColor) {
+        // 仅当背景色是Color对象时才调用getHexString
+        currentBgColor = `#${scene.background.getHexString()}`;
+    } else {
+        // 背景色为null/非Color对象时，先初始化场景背景色
+        scene.background = new THREE.Color(currentBgColor);
+    }
+    // 2. 创建临时对象存储背景色
+    const bgColorObj = { color: currentBgColor };
+    // 3. 添加背景颜色选择器
+    sceneFolder
+        .addColor(bgColorObj, "color")
+        .name("背景颜色")
+        .onChange((newColor) => {
+            // 实时更新场景背景颜色
+            scene.background.set(newColor);
+        });
+    sceneFolder.open();
+
     // 创建模型位置文件夹
     const f1 = gui.addFolder("模型位置");
     // 添加X轴位置调整：范围-10到10，步长0.01
@@ -267,6 +309,13 @@ const createGui = () => {
     f2.add(model.rotation, "y", -10, 10, 0.01).name("Y轴");
     // 添加Z轴旋转调整
     f2.add(model.rotation, "z", -10, 10, 0.01).name("Z轴");
+};
+
+// ==================== 核心新增：控制GUI显示/隐藏 ====================
+const toggleGuiDisplay = (show) => {
+    if (gui && gui.domElement) {
+        gui.domElement.style.display = show ? "block" : "none";
+    }
 };
 
 // ==================== 9. 展开模型：带动画效果 ====================
@@ -311,8 +360,34 @@ const modelRestore = () => {
     });
 };
 
-// ==================== 11. 鼠标滑过/点击检测：选中3D物体 ====================
+// ==================== 核心新增：进入编辑模式 ====================
+const enterEditMode = () => {
+    isEditMode.value = true;
+    toggleGuiDisplay(true); // 显示GUI面板
+    // 清空选中状态，确保编辑模式初始状态干净
+    selectedCircle = null;
+    outlinePass.selectedObjects = [];
+    clearColorGui();
+};
+
+// ==================== 核心新增：退出编辑模式 ====================
+const exitEditMode = () => {
+    isEditMode.value = false;
+    toggleGuiDisplay(false); // 隐藏GUI面板
+    // 重置交互状态
+    isDragging = false;
+    selectedCircle = null;
+    outlinePass.selectedObjects = [];
+    clearColorGui();
+    closeContextMenu(); // 关闭右键菜单
+    controls.enabled = true; // 恢复场景控制器
+};
+
+// ==================== 11. 鼠标滑过/点击检测：选中3D物体（新增编辑模式判断） ====================
 const selectMesh = (e) => {
+    // 非编辑模式：直接返回，不处理选中逻辑
+    if (!isEditMode.value) return;
+
     // 主容器不存在则返回
     if (!mainDom) return;
     // 获取主容器的位置和尺寸
@@ -399,14 +474,22 @@ const initComposer = () => {
 };
 
 // ==================== 色块GUI面板：选中色块时显示 ====================
-const updateColorGui = () => {
+// ==================== 色块GUI面板：选中色块时显示（新增颜色修改功能） ====================
+const updateColorGui = (updateOnly = false) => {
+    // 非编辑模式：直接返回
+    if (!isEditMode.value) return;
+
     // 先清空之前的色块GUI
     clearColorGui();
     // 未选中色块或GUI不存在则返回
     if (!selectedCircle || !gui) return;
 
-    // 创建色块参数文件夹：显示色块名称
+    // 如果是更新名称，先记录当前展开状态
+    let wasOpen = true;
+
+    // 创建色块参数文件夹：显示最新的色块名称
     colorGuiFolder = gui.addFolder(`色块：${selectedCircle.mesh.name}`);
+
     // 添加色块X轴位置调整：范围-20到20，步长0.01
     colorGuiFolder.add(selectedCircle.mesh.position, "x", -20, 20, 0.01).name("X");
     // 添加Y轴位置调整
@@ -432,18 +515,34 @@ const updateColorGui = () => {
     colorNameController = colorGuiFolder
         .add({ name: selectedCircle.mesh.name }, "name")
         .name("名称");
-    // 名称修改完成后触发
+
+    // 名称修改完成后触发（核心修复：重新创建文件夹实现实时更新）
     colorNameController.onFinishChange((val) => {
         // 更新色块mesh的名称
         selectedCircle.mesh.name = val;
         // 更新色块标签的文字
         selectedCircle.label.element.textContent = val;
-        // 更新GUI文件夹名称
-        colorGuiFolder.name(`色块：${val}`);
+
+        // 关键：重新调用updateColorGui，强制重建文件夹
+        updateColorGui(true);
     });
 
-    // 打开色块参数文件夹
-    colorGuiFolder.open();
+    // ==================== 新增：色块颜色修改功能 ====================
+    // 1. 格式化当前色块颜色为十六进制字符串（供颜色选择器显示）
+    const currentColor = `#${selectedCircle.mesh.material.color.getHexString()}`;
+    // 2. 创建临时对象存储颜色（dat.GUI需要绑定对象属性）
+    const colorObj = { color: currentColor };
+    // 3. 添加颜色选择器控件
+    colorGuiFolder
+        .addColor(colorObj, "color")
+        .name("色块颜色")
+        .onChange((newColor) => {
+            // 4. 实时更新色块材质颜色
+            selectedCircle.mesh.material.color.set(newColor);
+        });
+
+    // 保持文件夹展开状态
+    colorGuiFolder.open(wasOpen);
 };
 
 // ==================== 清空色块GUI面板 ====================
@@ -487,33 +586,141 @@ const createTextLabel = (text) => {
     return label;
 };
 
-// ==================== 添加色块：创建圆形色块 ====================
-const addIcon = () => {
-    // 创建圆形几何体：半径0.5，分段数32（越多数值越圆）
-    const geo = new THREE.CircleGeometry(0.5, 32);
-    // 创建基础材质：随机颜色、双面渲染、透明、透明度0.8
-    const mat = new THREE.MeshBasicMaterial({
+// ==================== 添加色块：创建圆形色块（支持自定义参数） ====================
+// 添加色块：创建圆形色块（支持自定义参数）
+const addIcon = (customData = null) => {
+    // 非编辑模式：直接返回，禁止添加色块
+    if (!isEditMode.value) return;
+
+    // 默认参数
+    const defaultParams = {
+        radius: 0.5,
         color: new THREE.Color(Math.random(), Math.random(), Math.random()),
+        position: new THREE.Vector3(-5, 3, 0),
+        scale: new THREE.Vector3(1, 1, 1),
+        rotation: new THREE.Euler(0, 0, 0),
+        name: `图标_${circleBlocks.length + 1}`,
+    };
+
+    // 合并自定义参数（粘贴时使用）
+    const params = {
+        ...defaultParams,
+        ...(customData || {}),
+    };
+
+    // 创建圆形几何体
+    const geo = new THREE.CircleGeometry(params.radius, 32);
+    // 创建基础材质
+    const mat = new THREE.MeshBasicMaterial({
+        color: params.color,
         side: THREE.DoubleSide,
         transparent: true,
         opacity: 0.8,
     });
-    // 创建网格物体：几何体+材质
+    // 创建网格物体
     const mesh = new THREE.Mesh(geo, mat);
-    // 设置色块初始位置：左上角（x=-5左，y=3上，z=0深度）
-    mesh.position.set(-5, 3, 0);
-    // 生成色块名称：图标_序号
-    const name = `图标_${circleBlocks.length + 1}`;
-    // 设置色块名称
-    mesh.name = name;
+
+    // 设置色块属性（移除原有偏移逻辑）
+    mesh.position.copy(params.position); // 直接使用目标位置
+    mesh.scale.copy(params.scale);
+    mesh.rotation.copy(params.rotation);
+    mesh.name = params.name;
+
     // 创建文字标签
-    const label = createTextLabel(name);
-    // 将标签添加到色块mesh中（跟随色块移动/旋转）
+    const label = createTextLabel(params.name);
+    // 将标签添加到色块mesh中
     mesh.add(label);
     // 将色块添加到场景
     scene.add(mesh);
     // 将色块和标签存入数组
     circleBlocks.push({ mesh, label });
+
+    // 粘贴后自动选中新色块
+    if (customData) {
+        selectedCircle = circleBlocks[circleBlocks.length - 1];
+        outlinePass.selectedObjects = [selectedCircle.mesh];
+        updateColorGui();
+    }
+};
+
+// ==================== 新增：复制选中的色块 ====================
+const copySelectedCircle = () => {
+    // 非编辑模式：直接返回
+    if (!isEditMode.value) return;
+
+    if (!selectedCircle) {
+        alert("请先选中一个色块再复制");
+        closeContextMenu();
+        return;
+    }
+
+    // 深拷贝色块数据（避免引用问题）
+    copiedCircleData = {
+        radius: selectedCircle.mesh.geometry.parameters.radius,
+        color: new THREE.Color().copy(selectedCircle.mesh.material.color),
+        position: new THREE.Vector3().copy(selectedCircle.mesh.position),
+        scale: new THREE.Vector3().copy(selectedCircle.mesh.scale),
+        rotation: new THREE.Euler().copy(selectedCircle.mesh.rotation),
+        name: `${selectedCircle.mesh.name}_副本`,
+    };
+
+    closeContextMenu();
+    console.log("色块已复制：", copiedCircleData);
+};
+
+// ==================== 新增：粘贴色块 ====================
+// 粘贴色块（粘贴到右键点击位置）
+const pasteCircle = () => {
+    // 非编辑模式：直接返回
+    if (!isEditMode.value) return;
+
+    if (!copiedCircleData) {
+        alert("请先复制一个色块再粘贴");
+        closeContextMenu();
+        return;
+    }
+
+    // 1. 获取右键点击的3D位置（无点击记录则用默认位置）
+    const targetPos = window.rightClickPosition?.normalized
+        ? getWorldPositionFromScreen(window.rightClickPosition.normalized)
+        : new THREE.Vector3(-5, 3, 0);
+
+    // 2. 合并复制的数据和目标位置
+    const pasteData = {
+        ...copiedCircleData,
+        position: targetPos, // 粘贴到右键点击的3D位置
+    };
+
+    // 3. 创建新色块
+    addIcon(pasteData);
+    closeContextMenu();
+};
+
+// ==================== 新增：键盘快捷键监听 ====================
+// 键盘快捷键监听
+const handleKeyDown = (e) => {
+    // 非编辑模式：直接返回，禁止快捷键
+    if (!isEditMode.value) return;
+
+    // Ctrl+C 复制
+    if (e.ctrlKey && e.key === "c") {
+        e.preventDefault(); // 阻止浏览器默认复制行为
+        copySelectedCircle();
+    }
+    // Ctrl+V 粘贴
+    else if (e.ctrlKey && e.key === "v") {
+        e.preventDefault(); // 阻止浏览器默认粘贴行为
+        pasteCircle();
+    }
+    // 新增：Delete/Backspace 键删除选中的色块
+    else if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault(); // 阻止浏览器默认行为（如回退页面）
+        if (selectedCircle) {
+            deleteSelectedCircle();
+        } else {
+            alert("请先选中一个色块再删除");
+        }
+    }
 };
 
 // ==================== 3D拖拽：将鼠标坐标转换为3D空间坐标 ====================
@@ -539,8 +746,11 @@ const initDragPlane = (mesh, mp) => {
     dragRay.ray.intersectPlane(dragPlane, dragIntersection);
 };
 
-// ==================== 鼠标按下事件：开始拖拽色块 ====================
+// ==================== 鼠标按下事件：开始拖拽色块（新增编辑模式判断） ====================
 const onMouseDown = (e) => {
+    // 非编辑模式：直接返回，禁止拖拽
+    if (!isEditMode.value) return;
+
     // 只处理左键点击（e.button=0）
     if (e.button === 0) {
         // 获取归一化的鼠标坐标
@@ -573,8 +783,11 @@ const onMouseDown = (e) => {
     }
 };
 
-// ==================== 鼠标移动事件：拖拽色块 ====================
+// ==================== 鼠标移动事件：拖拽色块（新增编辑模式判断） ====================
 const onMouseMove = (e) => {
+    // 非编辑模式：直接返回，禁止拖拽
+    if (!isEditMode.value) return;
+
     // 未拖拽或未选中色块则返回
     if (!isDragging || !selectedCircle) return;
     // 获取归一化的鼠标坐标
@@ -598,42 +811,66 @@ const onMouseUp = () => {
     controls.enabled = true;
 };
 
-// ==================== 右键菜单：打开自定义右键菜单 ====================
+// ==================== 右键菜单：打开自定义右键菜单（新增编辑模式判断） ====================
+// 右键菜单：打开自定义右键菜单（支持整个场景）
 const openContextMenu = (e) => {
+    // 非编辑模式：直接返回，禁止右键菜单
+    if (!isEditMode.value) return;
+
     // 阻止原生右键菜单
     e.preventDefault();
     // 阻止事件冒泡
     e.stopPropagation();
-    // 获取归一化的鼠标坐标
+
+    // 1. 检测是否点击了色块（保留原有选中逻辑）
     const mp = getMouseNormalized(e.clientX, e.clientY);
-    // 设置射线检测器
     raycaster.setFromCamera(mp, camera);
-    // 检测射线与色块的交点
-    const intersects = raycaster.intersectObjects(
+    const circleIntersects = raycaster.intersectObjects(
         circleBlocks.map((b) => b.mesh),
         true,
     );
-    if (intersects.length > 0) {
-        // 选中右键点击的色块
-        selectedCircle = circleBlocks.find((b) => b.mesh === intersects[0].object);
-        // 显示自定义右键菜单
-        contextMenuDom.style.display = "block";
-        // 设置菜单位置为鼠标位置
-        contextMenuDom.style.left = e.clientX + "px";
-        contextMenuDom.style.top = e.clientY + "px";
-    } else {
-        // 未右键点击色块，隐藏菜单
-        contextMenuDom.style.display = "none";
-    }
-};
 
+    // 2. 如果点击了色块，选中该色块
+    if (circleIntersects.length > 0) {
+        selectedCircle = circleBlocks.find((b) => b.mesh === circleIntersects[0].object);
+    }
+
+    // 3. 记录右键点击的屏幕坐标（用于粘贴时定位）
+    window.rightClickPosition = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        normalized: mp, // 归一化坐标，用于3D空间计算
+    };
+
+    // 4. 显示自定义右键菜单（无论是否点击色块）
+    contextMenuDom.style.display = "block";
+    contextMenuDom.style.left = e.clientX + "px";
+    contextMenuDom.style.top = e.clientY + "px";
+};
+// 工具函数：将屏幕坐标转换为3D场景中的世界坐标（粘贴位置）
+const getWorldPositionFromScreen = (normalizedPos) => {
+    // 创建一个平面（默认在z=0平面，可根据需要调整）
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const ray = new THREE.Raycaster();
+    const intersectPoint = new THREE.Vector3();
+
+    // 设置射线并计算与平面的交点
+    ray.setFromCamera(normalizedPos, camera);
+    ray.ray.intersectPlane(plane, intersectPoint);
+
+    return intersectPoint;
+};
 // ==================== 关闭右键菜单 ====================
 const closeContextMenu = () => {
     contextMenuDom.style.display = "none";
 };
 
-// ==================== 删除选中的色块 ====================
+// ==================== 删除选中的色块（新增编辑模式判断） ====================
+// 删除选中的色块
 const deleteSelectedCircle = () => {
+    // 非编辑模式：直接返回
+    if (!isEditMode.value) return;
+
     // 未选中色块则返回
     if (!selectedCircle) return;
     // 从场景中移除色块
@@ -652,7 +889,7 @@ const deleteSelectedCircle = () => {
     outlinePass.selectedObjects = [];
     // 清空色块GUI面板
     clearColorGui();
-    // 关闭右键菜单
+    // 关闭右键菜单（快捷键删除时也会执行，无副作用）
     closeContextMenu();
 };
 
@@ -696,6 +933,9 @@ onMounted(() => {
 
     // 绑定自定义右键菜单事件
     renderer.domElement.addEventListener("contextmenu", openContextMenu);
+
+    // 新增：绑定键盘快捷键事件
+    window.addEventListener("keydown", handleKeyDown);
 });
 
 // ==================== 组件卸载：清理资源 ====================
@@ -718,6 +958,9 @@ onUnmounted(() => {
         }
     });
     renderer.domElement.removeEventListener("contextmenu", openContextMenu);
+
+    // 新增：移除键盘快捷键监听
+    window.removeEventListener("keydown", handleKeyDown);
 
     // 清理Three.js资源：释放渲染器
     if (renderer) renderer.dispose();
