@@ -170,13 +170,18 @@ const renderLoop = () => {
     // 更新轨道控制器：启用阻尼时必须调用
     controls.update();
 
-    // 遍历所有色块：让文字大小跟随色块缩放比例变化
+    // ========== 核心优化：文字大小跟随色块缩放 ==========
     circleBlocks.forEach((item) => {
-        if (item.label) {
+        if (item.label && item.label.element) {
             // 获取色块的缩放比例（x/y/z一致）
             const scale = item.mesh.scale.x;
-            // 设置文字字号：基础系数15 * 缩放比例（保证文字大小适配色块）
-            item.label.element.style.fontSize = `${15 * scale}px`;
+            // 基础字号12px（适配默认大小的色块） * 缩放比例
+            // 增加最小字号限制（避免缩放过小时文字看不见）
+            const fontSize = Math.max(6, 12 * scale);
+            // 设置文字字号
+            item.label.element.style.fontSize = `${fontSize}px`;
+            // 可选：同步调整行高，让文字垂直居中更稳定
+            item.label.element.style.lineHeight = `${fontSize}px`;
         }
     });
 
@@ -552,6 +557,12 @@ const updateColorGui = (updateOnly = false) => {
         .onChange((v) => {
             // 保证XYZ缩放比例一致（均匀缩放）
             selectedCircle.mesh.scale.setScalar(v);
+            // ========== 新增：缩放时立即更新文字大小 ==========
+            if (selectedCircle.label && selectedCircle.label.element) {
+                const fontSize = Math.max(6, 12 * v);
+                selectedCircle.label.element.style.fontSize = `${fontSize}px`;
+                selectedCircle.label.element.style.lineHeight = `${fontSize}px`;
+            }
         });
 
     // 色块名称修改：绑定临时对象的name属性
@@ -618,8 +629,10 @@ const createTextLabel = (text) => {
     const div = document.createElement("div");
     // 文字颜色白色
     div.style.color = "#fff";
-    // 基础字号8px（会跟随色块缩放）
-    div.style.fontSize = "8px";
+    // 基础字号12px（适配默认大小的色块）
+    div.style.fontSize = "12px";
+    // 基础行高与字号一致，保证垂直居中
+    div.style.lineHeight = "12px";
     // 文字加粗
     div.style.fontWeight = "bold";
     // 文字阴影：增强可读性
@@ -684,6 +697,11 @@ const addIcon = (customData = null) => {
 
     // 创建文字标签
     const label = createTextLabel(params.name);
+    // 初始化时根据缩放比例设置文字大小
+    const fontSize = Math.max(6, 12 * params.scale.x);
+    label.element.style.fontSize = `${fontSize}px`;
+    label.element.style.lineHeight = `${fontSize}px`;
+
     // 将标签添加到色块mesh中
     mesh.add(label);
     // 将色块添加到场景
