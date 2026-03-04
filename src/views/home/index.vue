@@ -269,45 +269,85 @@ const createGui = () => {
     // 初始隐藏GUI（非编辑模式）
     if (gui.domElement) gui.domElement.style.display = isEditMode.value ? "block" : "none";
 
-    // ==================== 修复：场景背景颜色修改（处理null值） ====================
+    // ==================== 场景设置文件夹（背景色 + 坐标轴开关 + 长度调整） ====================
     const sceneFolder = gui.addFolder("场景设置");
-    // 1. 修复核心：先判断背景色是否存在，不存在则设置默认值（浅灰色）
+
+    // 1. 背景颜色修改（修复null值问题）
     let currentBgColor = "#000000"; // 默认背景色
     if (scene.background && scene.background.isColor) {
-        // 仅当背景色是Color对象时才调用getHexString
         currentBgColor = `#${scene.background.getHexString()}`;
     } else {
-        // 背景色为null/非Color对象时，先初始化场景背景色
         scene.background = new THREE.Color(currentBgColor);
     }
-    // 2. 创建临时对象存储背景色
     const bgColorObj = { color: currentBgColor };
-    // 3. 添加背景颜色选择器
     sceneFolder
         .addColor(bgColorObj, "color")
         .name("背景颜色")
         .onChange((newColor) => {
-            // 实时更新场景背景颜色
             scene.background.set(newColor);
         });
-    sceneFolder.open();
+
+    // 2. 坐标轴显示/隐藏开关 + 长度调整（修复parameters.size未定义问题）
+    // let axesHelper = scene.getObjectByName("axesHelper");
+    // // 定义初始长度（兼容不同Three.js版本）
+    // let initialAxesLength = 3;
+    // if (!axesHelper) {
+    //     axesHelper = new THREE.AxesHelper(initialAxesLength); // 默认长度3
+    //     axesHelper.name = "axesHelper"; // 命名方便查找
+    //     scene.add(axesHelper); // 添加到场景
+    // } else {
+    //     // 兼容方案：优先从geometry获取长度，失败则用默认值
+    //     if (axesHelper.geometry && axesHelper.geometry.boundingBox) {
+    //         axesHelper.geometry.computeBoundingBox();
+    //         initialAxesLength = axesHelper.geometry.boundingBox.max.x || 3;
+    //     } else if (axesHelper.parameters?.size) {
+    //         initialAxesLength = axesHelper.parameters.size;
+    //     }
+    // }
+
+    // // 2.1 显示/隐藏开关
+    // const axesVisibleObj = { showAxes: axesHelper.visible };
+    // sceneFolder
+    //     .add(axesVisibleObj, "showAxes")
+    //     .name("显示坐标轴")
+    //     .onChange((isShow) => {
+    //         axesHelper.visible = isShow;
+    //     });
+
+    // // 2.2 坐标轴长度调整（修复size未定义问题）
+    // const axesLengthObj = { axesLength: initialAxesLength };
+    // sceneFolder
+    //     .add(axesLengthObj, "axesLength")
+    //     .name("坐标轴长度")
+    //     .min(1) // 最小长度1
+    //     .max(10) // 最大长度10
+    //     .step(0.1) // 调整步长0.1
+    //     .onChange((newLength) => {
+    //         // 销毁旧的坐标轴，创建新长度的坐标轴
+    //         scene.remove(axesHelper);
+    //         if (axesHelper.geometry) axesHelper.geometry.dispose(); // 释放几何资源
+    //         if (axesHelper.material) axesHelper.material.dispose(); // 释放材质资源
+    //         // 创建新坐标轴
+    //         axesHelper = new THREE.AxesHelper(newLength);
+    //         axesHelper.name = "axesHelper";
+    //         axesHelper.visible = axesVisibleObj.showAxes; // 继承显示状态（直接取对象属性，更稳定）
+    //         scene.add(axesHelper);
+    //         // 更新存储的长度值
+    //         axesLengthObj.axesLength = newLength;
+    //     });
+
+    // sceneFolder.open(); // 默认展开场景设置文件夹
 
     // 创建模型位置文件夹
     const f1 = gui.addFolder("模型位置");
-    // 添加X轴位置调整：范围-10到10，步长0.01
     f1.add(model.position, "x", -10, 10, 0.01).name("X轴");
-    // 添加Y轴位置调整
     f1.add(model.position, "y", -10, 10, 0.01).name("Y轴");
-    // 添加Z轴位置调整
     f1.add(model.position, "z", -10, 10, 0.01).name("Z轴");
 
     // 创建模型旋转文件夹
     const f2 = gui.addFolder("模型旋转");
-    // 添加X轴旋转调整
     f2.add(model.rotation, "x", -10, 10, 0.01).name("X轴");
-    // 添加Y轴旋转调整
     f2.add(model.rotation, "y", -10, 10, 0.01).name("Y轴");
-    // 添加Z轴旋转调整
     f2.add(model.rotation, "z", -10, 10, 0.01).name("Z轴");
 };
 
@@ -387,6 +427,9 @@ const exitEditMode = () => {
 const selectMesh = (e) => {
     // 非编辑模式：直接返回，不处理选中逻辑
     if (!isEditMode.value) return;
+
+    // 修复1：判断点击目标是否为GUI元素，若是则跳过
+    if (e.target.closest(".dg")) return;
 
     // 主容器不存在则返回
     if (!mainDom) return;
@@ -543,6 +586,19 @@ const updateColorGui = (updateOnly = false) => {
 
     // 保持文件夹展开状态
     colorGuiFolder.open(wasOpen);
+
+    // 修复2：给GUI输入框添加事件阻止冒泡
+    setTimeout(() => {
+        const guiInputs = colorGuiFolder.domElement.querySelectorAll("input");
+        guiInputs.forEach((input) => {
+            input.addEventListener("click", (e) => {
+                e.stopPropagation(); // 阻止点击冒泡
+            });
+            input.addEventListener("keydown", (e) => {
+                if (e.key === "Enter") e.stopPropagation(); // 阻止回车冒泡
+            });
+        });
+    }, 0);
 };
 
 // ==================== 清空色块GUI面板 ====================
@@ -699,6 +755,9 @@ const pasteCircle = () => {
 // ==================== 新增：键盘快捷键监听 ====================
 // 键盘快捷键监听
 const handleKeyDown = (e) => {
+    // 修复3：判断是否在GUI输入框中，若是则跳过快捷键
+    if (e.target.tagName === "INPUT" && e.target.closest(".dg")) return;
+
     // 非编辑模式：直接返回，禁止快捷键
     if (!isEditMode.value) return;
 
@@ -748,6 +807,9 @@ const initDragPlane = (mesh, mp) => {
 
 // ==================== 鼠标按下事件：开始拖拽色块（新增编辑模式判断） ====================
 const onMouseDown = (e) => {
+    // 修复4：判断点击目标是否为GUI元素，若是则跳过
+    if (e.target.closest(".dg")) return;
+
     // 非编辑模式：直接返回，禁止拖拽
     if (!isEditMode.value) return;
 
@@ -814,6 +876,9 @@ const onMouseUp = () => {
 // ==================== 右键菜单：打开自定义右键菜单（新增编辑模式判断） ====================
 // 右键菜单：打开自定义右键菜单（支持整个场景）
 const openContextMenu = (e) => {
+    // 修复5：判断点击目标是否为GUI元素，若是则跳过
+    if (e.target.closest(".dg")) return;
+
     // 非编辑模式：直接返回，禁止右键菜单
     if (!isEditMode.value) return;
 
@@ -861,7 +926,10 @@ const getWorldPositionFromScreen = (normalizedPos) => {
     return intersectPoint;
 };
 // ==================== 关闭右键菜单 ====================
-const closeContextMenu = () => {
+const closeContextMenu = (e) => {
+    // 修复6：判断点击目标是否为GUI元素，若是则跳过
+    if (e && e.target.closest(".dg")) return;
+
     contextMenuDom.style.display = "none";
 };
 
