@@ -74,6 +74,8 @@ const iconArray = ref([]);
 let circleBlocks = [];
 // 选中的色块：记录当前被点击选中的色块
 let selectedCircle = null;
+// 多选的色块数组：记录通过拉框选中的多个色块
+let selectedCircles = [];
 // 拖拽状态：标记是否正在拖拽色块
 let isDragging = false;
 // 鼠标坐标：存储归一化的鼠标位置（用于射线检测）
@@ -84,6 +86,8 @@ let dragPlane = new THREE.Plane(); // 拖拽平面
 let dragRay = new THREE.Raycaster(); // 拖拽射线
 let dragIntersection = new THREE.Vector3(); // 射线与拖拽平面的交点
 let dragNormal = new THREE.Vector3(); // 拖拽平面的法向量
+let dragStartPositions = []; // 拖拽开始时所有选中色块的初始位置
+let dragStartIntersection = new THREE.Vector3(); // 拖拽开始时射线与平面的交点
 
 // 2D标签渲染器：渲染色块上的文字标签
 let labelRenderer;
@@ -422,6 +426,7 @@ const exitEditMode = () => {
     // 重置交互状态
     isDragging = false;
     selectedCircle = null;
+    selectedCircles = []; // 清空多选色块
     outlinePass.selectedObjects = [];
     clearColorGui();
     closeContextMenu(); // 关闭右键菜单
@@ -459,6 +464,11 @@ const selectMesh = (e) => {
             // 判断是否点击的是色块
             const isBlock = circleBlocks.some((b) => b.mesh === obj);
             if (isBlock) {
+                // 如果有多个选中的色块，不进行单选处理
+                if (selectedCircles.length > 0) {
+                    // 保持多选状态，不做任何操作
+                    return;
+                }
                 // 选中该色块
                 selectedCircle = circleBlocks.find((b) => b.mesh === obj);
                 // 设置描边选中的物体为该色块
@@ -468,6 +478,7 @@ const selectMesh = (e) => {
             } else {
                 // 未点击色块，清空选中状态
                 selectedCircle = null;
+                selectedCircles = []; // 清空多选
                 // 描边选中的模型物体
                 outlinePass.selectedObjects = [obj];
                 // 清空色块GUI面板
@@ -476,6 +487,7 @@ const selectMesh = (e) => {
         } else {
             // 未点击任何物体，清空选中状态
             selectedCircle = null;
+            selectedCircles = []; // 清空多选
             // 清空描边
             outlinePass.selectedObjects = [];
             // 清空色块GUI面板
@@ -483,6 +495,12 @@ const selectMesh = (e) => {
         }
     } else {
         // 鼠标滑过事件
+        // 如果有多个选中的色块，不进行悬停高亮
+        if (selectedCircles.length > 0) {
+            tag.style.display = "none";
+            return;
+        }
+
         if (intersects.length > 0 && !selectedCircle) {
             // 描边滑过的物体
             outlinePass.selectedObjects = [intersects[0].object];
@@ -841,10 +859,62 @@ const onMouseDown = (e) => {
         const arr = circleBlocks.map((i) => i.mesh);
         // 检测射线与色块的交点
         const intersects = raycaster.intersectObjects(arr, true);
+
+        // ==================== Ctrl+左键：多选模式 ====================
+        if (e.ctrlKey || e.metaKey) {
+            if (intersects.length > 0) {
+                const clickedBlock = circleBlocks.find((i) => i.mesh === intersects[0].object);
+                if (clickedBlock) {
+                    // 检查是否已经选中该色块
+                    const index = selectedCircles.findIndex(c => c.mesh === clickedBlock.mesh);
+                    if (index > -1) {
+                        // 已选中，则取消选中
+                        selectedCircles.splice(index, 1);
+                    } else {
+                        // 未选中，则添加到选中列表
+                        selectedCircles.push(clickedBlock);
+                    }
+
+                    // 更新描边选中的物体
+                    if (selectedCircles.length > 0) {
+                        outlinePass.selectedObjects = selectedCircles.map(c => c.mesh);
+                    } else {
+                        outlinePass.selectedObjects = [];
+                    }
+                }
+            }
+            return;
+        }
+
+        // ==================== 普通左键：拖拽模式 ====================
         if (intersects.length > 0) {
-            // 选中点击的色块
-            selectedCircle = circleBlocks.find((i) => i.mesh === intersects[0].object);
-            // 标记开始拖拽
+            const clickedBlock = circleBlocks.find((i) => i.mesh === intersects[0].object);
+
+            // 如果点击的是已选中的色块之一，则开始拖拽所有选中的色块
+            if (selectedCircles.length > 0 && selectedCircles.includes(clickedBlock)) {
+                isDragging = true;
+
+                // 初始化拖拽平面（使用第一个选中色块的位置）
+                initDragPlane(selectedCircles[0].mesh, mp);
+
+                // 记录拖拽开始时所有选中色块的初始位置
+                dragStartPositions = selectedCircles.map(block => ({
+                    block: block,
+                    position: block.mesh.position.clone()
+                }));
+
+                // 记录拖拽开始时射线与平面的交点
+                dragRay.setFromCamera(mp, camera);
+                dragRay.ray.intersectPlane(dragPlane, dragStartIntersection);
+
+                // 禁用轨道控制器
+                controls.enabled = false;
+                return;
+            }
+
+            // 否则，只选中并拖拽点击的色块
+            selectedCircle = clickedBlock;
+            selectedCircles = []; // 清空多选
             isDragging = true;
             // 初始化拖拽平面
             initDragPlane(selectedCircle.mesh, mp);
@@ -855,8 +925,12 @@ const onMouseDown = (e) => {
             // 更新色块GUI面板
             updateColorGui();
         } else {
-            // 未点击色块，停止拖拽
+            // 未点击色块，清空选中状态，停止拖拽
             isDragging = false;
+            selectedCircle = null;
+            selectedCircles = [];
+            outlinePass.selectedObjects = [];
+            clearColorGui();
             // 启用轨道控制器
             controls.enabled = true;
         }
@@ -868,6 +942,27 @@ const onMouseMove = (e) => {
     // 非编辑模式：直接返回，禁止拖拽
     if (!isEditMode.value) return;
 
+    // ==================== 多选拖拽：拖拽多个色块 ====================
+    if (isDragging && selectedCircles.length > 0 && dragStartPositions.length > 0) {
+        // 获取归一化的鼠标坐标
+        const mp = getMouseNormalized(e.clientX, e.clientY);
+        // 设置拖拽射线
+        dragRay.setFromCamera(mp, camera);
+        // 计算射线与拖拽平面的交点
+        if (dragRay.ray.intersectPlane(dragPlane, dragIntersection)) {
+            // 计算从拖拽开始到当前的位移量
+            const delta = new THREE.Vector3().subVectors(dragIntersection, dragStartIntersection);
+
+            // 根据初始位置和位移量更新所有选中色块的位置
+            dragStartPositions.forEach((item, index) => {
+                const newPosition = item.position.clone().add(delta);
+                selectedCircles[index].mesh.position.copy(newPosition);
+            });
+        }
+        return;
+    }
+
+    // ==================== 单选拖拽：拖拽单个色块 ====================
     // 未拖拽或未选中色块则返回
     if (!isDragging || !selectedCircle) return;
     // 获取归一化的鼠标坐标
