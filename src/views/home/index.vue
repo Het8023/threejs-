@@ -987,7 +987,7 @@ const onMouseUp = () => {
 };
 
 // ==================== 右键菜单：打开自定义右键菜单（新增编辑模式判断） ====================
-// 右键菜单：打开自定义右键菜单（支持整个场景）
+// 右键菜单：打开自定义右键菜单（仅在点击色块时显示）
 const openContextMenu = (e) => {
     // 修复5：判断点击目标是否为GUI元素，若是则跳过
     if (e.target.closest(".dg")) return;
@@ -1000,7 +1000,7 @@ const openContextMenu = (e) => {
     // 阻止事件冒泡
     e.stopPropagation();
 
-    // 1. 检测是否点击了色块（保留原有选中逻辑）
+    // 1. 检测是否点击了色块
     const mp = getMouseNormalized(e.clientX, e.clientY);
     raycaster.setFromCamera(mp, camera);
     const circleIntersects = raycaster.intersectObjects(
@@ -1008,22 +1008,23 @@ const openContextMenu = (e) => {
         true,
     );
 
-    // 2. 如果点击了色块，选中该色块
+    // 2. 只有点击色块时才显示右键菜单
     if (circleIntersects.length > 0) {
+        // 选中该色块
         selectedCircle = circleBlocks.find((b) => b.mesh === circleIntersects[0].object);
+
+        // 记录右键点击的屏幕坐标（用于粘贴时定位）
+        window.rightClickPosition = {
+            clientX: e.clientX,
+            clientY: e.clientY,
+            normalized: mp, // 归一化坐标，用于3D空间计算
+        };
+
+        // 显示自定义右键菜单
+        contextMenuDom.style.display = "block";
+        contextMenuDom.style.left = e.clientX + "px";
+        contextMenuDom.style.top = e.clientY + "px";
     }
-
-    // 3. 记录右键点击的屏幕坐标（用于粘贴时定位）
-    window.rightClickPosition = {
-        clientX: e.clientX,
-        clientY: e.clientY,
-        normalized: mp, // 归一化坐标，用于3D空间计算
-    };
-
-    // 4. 显示自定义右键菜单（无论是否点击色块）
-    contextMenuDom.style.display = "block";
-    contextMenuDom.style.left = e.clientX + "px";
-    contextMenuDom.style.top = e.clientY + "px";
 };
 // 工具函数：将屏幕坐标转换为3D场景中的世界坐标（粘贴位置）
 const getWorldPositionFromScreen = (normalizedPos) => {
